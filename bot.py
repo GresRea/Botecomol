@@ -1,6 +1,8 @@
 import os
+import sys
 import re
 import time
+import traceback
 from threading import Thread
 from flask import Flask, jsonify
 from datetime import timedelta
@@ -14,19 +16,61 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from text import (
-    SURVEY, POLICY_TEXT, WELCOME_TEXT, 
-    BASE_SCORE, AGE_QUESTION_IDX, FAMILY_QUESTION_IDX
-)
+# ══════════════════════════ ЛОГИРОВАНИЕ ЗАПУСКА ══════════════════════════
 
-# ══════════════════════════ НАСТРОЙКИ ══════════════════════════
+print("=" * 50)
+print("🚀 ЗАПУСК БОТА")
+print("=" * 50)
 
+# Проверка переменных окружения
+print("\n📋 ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_START_TIME = time.time()
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS")
-ADMIN_IDS = [int(i.strip()) for i in ADMIN_IDS_STR.split(",")]
+PORT = os.getenv("PORT", "8080")
+
+print(f"✅ BOT_TOKEN: {'Установлен' if BOT_TOKEN else 'ОТСУТСТВУЕТ'} (длина: {len(BOT_TOKEN) if BOT_TOKEN else 0})")
+print(f"✅ ADMIN_IDS: {ADMIN_IDS_STR if ADMIN_IDS_STR else 'ОТСУТСТВУЕТ'}")
+print(f"✅ PORT: {PORT}")
+
+if not BOT_TOKEN:
+    print("❌ КРИТИЧЕСКАЯ ОШИБКА: BOT_TOKEN не установлен!")
+    sys.exit(1)
+    
+if not ADMIN_IDS_STR:
+    print("❌ КРИТИЧЕСКАЯ ОШИБКА: ADMIN_IDS не установлен!")
+    sys.exit(1)
+
+try:
+    ADMIN_IDS = [int(i.strip()) for i in ADMIN_IDS_STR.split(",")]
+    print(f"✅ ADMIN_IDS распарсены: {ADMIN_IDS}")
+except Exception as e:
+    print(f"❌ Ошибка парсинга ADMIN_IDS: {e}")
+    sys.exit(1)
+
+# ══════════════════════════ ИМПОРТ TEXT.PY ══════════════════════════
+
+print("\n📚 ЗАГРУЗКА МОДУЛЯ TEXT.PY...")
+try:
+    from text import (
+        SURVEY, POLICY_TEXT, WELCOME_TEXT, 
+        BASE_SCORE, AGE_QUESTION_IDX, FAMILY_QUESTION_IDX
+    )
+    print(f"✅ SURVEY загружен: {len(SURVEY)} вопросов")
+    print(f"✅ BASE_SCORE: {BASE_SCORE}")
+    print(f"✅ AGE_QUESTION_IDX: {AGE_QUESTION_IDX}")
+    print(f"✅ FAMILY_QUESTION_IDX: {FAMILY_QUESTION_IDX}")
+except ImportError as e:
+    print(f"❌ Ошибка импорта text.py: {e}")
+    traceback.print_exc()
+    sys.exit(1)
+except Exception as e:
+    print(f"❌ Другая ошибка при импорте text.py: {e}")
+    traceback.print_exc()
+    sys.exit(1)
 
 # ══════════════════════════ КОНСТАНТЫ ══════════════════════════
+
+BOT_START_TIME = time.time()
 
 CB_TOGGLE   = "toggle"
 CB_CONTINUE = "continue"
@@ -123,7 +167,7 @@ def build_keyboard(q_idx: int, selected: set) -> InlineKeyboardMarkup:
 
     buttons = [
         [InlineKeyboardButton(
-            text=opt,  # Убрана логика добавления ✅
+            text=opt,
             callback_data=f"{CB_TOGGLE}:{q_idx}:{i}",
             api_kwargs={"style": "primary"} if i in selected else {},
         )]
@@ -242,6 +286,7 @@ def build_admin_report_text(
 # ══════════════════════════ ХЭНДЛЕРЫ ══════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print(f"📨 Команда /start от пользователя {update.effective_user.id}")
     context.user_data.clear()
     init_user(context)
 
@@ -258,6 +303,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     init_user(context)
     data = query.data
+    print(f"🔘 Нажата кнопка: {data} от {query.from_user.id}")
 
     if data == CB_POLICY:
         await query.answer()
@@ -369,33 +415,61 @@ async def show_results(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=admin_text, parse_mode="HTML")
-        except Exception:
-            pass
+            print(f"📤 Отправлен отчет админу {admin_id}")
+        except Exception as e:
+            print(f"❌ Ошибка отправки админу {admin_id}: {e}")
 
 # ══════════════════════════ FLASK СЕРВЕР ══════════════════════════
 
 flask_app = Flask(__name__)
+
 @flask_app.route("/")
 def health_check():
     uptime = int(time.time() - BOT_START_TIME)
     return jsonify({
         "status": "ok",
-        "uptime": str(uptime)
+        "uptime": str(uptime),
+        "bot": "running"
     })
 
 def run_flask():
     port = int(os.getenv("PORT", 8080))
+    print(f"🌐 Запуск Flask сервера на порту {port}")
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # ══════════════════════════ ЗАПУСК ══════════════════════════
 
 def main() -> None:
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    Thread(target=run_flask, daemon=True).start()
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("\n" + "=" * 50)
+    print("⚙️ ИНИЦИАЛИЗАЦИЯ БОТА")
+    print("=" * 50)
     
+    try:
+        print("\n🏗 Создание приложения...")
+        app = Application.builder().token(BOT_TOKEN).build()
+        print("✅ Приложение создано")
+        
+        print("📝 Добавление обработчиков...")
+        app.add_handler(CommandHandler("start", cmd_start))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+        print("✅ Обработчики добавлены")
+        
+        print("🚀 Запуск Flask в отдельном потоке...")
+        Thread(target=run_flask, daemon=True).start()
+        print("✅ Flask запущен")
+        
+        print("\n" + "=" * 50)
+        print("🎉 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ!")
+        print("=" * 50 + "\n")
+        
+        print("🔄 Запуск polling...")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        print(f"\n❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
 if __name__ == "__main__":
     main()
